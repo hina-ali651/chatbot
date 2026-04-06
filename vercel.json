@@ -1,0 +1,25 @@
+{
+  "builds": [
+    {
+      "src": "cli_assistant/frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "cli_assistant/main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "cli_assistant/main.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "cli_assistant/frontend/dist/$1"
+    }
+  ]
+}
