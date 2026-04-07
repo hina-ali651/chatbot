@@ -2,6 +2,7 @@ import os
 import json
 import jwt
 import datetime
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +12,11 @@ from dotenv import load_dotenv
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = BACKEND_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+load_dotenv(BACKEND_DIR / ".env")
 
 app = FastAPI()
 
@@ -24,8 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SECRET_KEY = "super-secret-key-for-local-chatbot"
-HISTORY_FILE = "chat_history.json"
+SECRET_KEY = os.environ.get("JWT_SECRET", "dev-only-insecure-secret-change-me")
+HISTORY_FILE = DATA_DIR / "chat_history.json"
 SYSTEM_PROMPT = """You are a helpful, friendly AI assistant.
 Keep your responses well-formatted and clear for reading.
 When asked to help with code, provide clean, working examples using markdown."""
@@ -49,8 +54,8 @@ class ChatRequest(BaseModel):
 
 # --- Helpers ---
 def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
+    if HISTORY_FILE.exists():
+        with HISTORY_FILE.open("r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
@@ -58,7 +63,7 @@ def load_history():
     return []
 
 def save_history(history):
-    with open(HISTORY_FILE, "w") as f:
+    with HISTORY_FILE.open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
 def verify_token(authorization: str = Header(None)):
@@ -166,4 +171,4 @@ def chat(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

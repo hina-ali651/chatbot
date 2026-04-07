@@ -1,16 +1,40 @@
-# React + Vite
+# Chatbot (Frontend + Backend)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Clean, professional structure for a full-stack app:
 
-Currently, two official plugins are available:
+- `frontend/`: React + Vite UI
+- `backend/`: FastAPI API server
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Requirements
 
-## React Compiler
+- Node.js (LTS recommended)
+- Python 3.10+ (3.11 recommended)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Run backend (FastAPI)
 
-## Expanding the ESLint configuration
+From repo root:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+cd backend
+python -m venv .venv
+.venv\\Scripts\\activate
+pip install -r requirements.txt
+copy .env.example .env
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+## Run frontend (Vite)
+
+In another terminal from repo root:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend dev server proxies `/api/*` to `http://127.0.0.1:8000`.
+
+## Notes
+
+- Never commit `.env` files (keys/secrets). Use `backend/.env.example` for sharing required variable names.
