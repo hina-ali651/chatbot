@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import axios from "axios";
 import { GoogleLogin } from "@react-oauth/google";
-import { LogOut, Send, Trash2, Bot, MessageSquare, AlertCircle } from "lucide-react";
+import { LogOut, Send, Trash2, Sparkles, User, AlertCircle, MessageSquare } from "lucide-react";
 
 function loadToken() {
   try {
@@ -23,11 +23,11 @@ function saveToken(token) {
 export default function App() {
   const [token, setToken] = useState(loadToken);
   const [message, setMessage] = useState("");
-  const [reply, setReply] = useState("");
   const [history, setHistory] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const historyRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const textareaRef = useRef(null);
 
   const googleClientIdPresent = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 
@@ -37,10 +37,16 @@ export default function App() {
 
   // Auto-scroll history
   useEffect(() => {
-    if (historyRef.current) {
-      historyRef.current.scrollTop = historyRef.current.scrollHeight;
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [history, busy]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
-  }, [history]);
+  }, [message]);
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: "/api" });
@@ -62,7 +68,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    void refreshHistory();
+    if (token) void refreshHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -78,7 +84,8 @@ export default function App() {
       if (!newToken) throw new Error("Backend did not return token");
       setToken(newToken);
     } catch (e) {
-      setError(e?.response?.data?.detail ?? String(e));
+      console.error(e);
+      setError(e?.response?.data?.detail ?? "Login Failed. Ensure VITE_GOOGLE_CLIENT_ID is valid.");
       setToken("");
     } finally {
       setBusy(false);
@@ -86,20 +93,40 @@ export default function App() {
   }
 
   async function sendMessage(e) {
-    e.preventDefault();
-    if (!message.trim() || !token) return;
+    if (e) e.preventDefault();
+    if (!message.trim() || !token || busy) return;
+    
+    const userMessage = message.trim();
+    setMessage(""); // UI updates instantly
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    
+    // Optimistic UI update
+    setHistory(prev => [...prev, { role: "user", parts: userMessage }]);
     setError("");
-    setReply("");
     setBusy(true);
+
     try {
-      const res = await api.post("/chat", { message });
-      setReply(res.data?.reply ?? "");
-      setMessage("");
+      const res = await api.post("/chat", { message: userMessage });
+      // We rely on refreshHistory to pull the updated history including the model's reply
       await refreshHistory();
     } catch (e) {
-      setError(e?.response?.data?.detail ?? String(e));
+      const errDetail = e?.response?.data?.detail;
+      if (errDetail && errDetail.includes("PERMISSION_DENIED")) {
+        setError("Your Gemini API Key was revoked by Google (likely due to a leak). Please generate a new key at Google AI Studio and update your backend/.env file.");
+      } else {
+        setError(errDetail ?? String(e));
+      }
+      // Remove the optimistic message on failure
+      setHistory(prev => prev.slice(0, -1));
     } finally {
       setBusy(false);
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
     }
   }
 
@@ -110,7 +137,6 @@ export default function App() {
     try {
       await api.post("/clear");
       setHistory([]);
-      setReply("");
     } catch (e) {
       setError(e?.response?.data?.detail ?? String(e));
     } finally {
@@ -121,133 +147,165 @@ export default function App() {
   function logout() {
     setToken("");
     setHistory([]);
-    setReply("");
     setMessage("");
   }
 
-  return (
-    <>
-      {/* Background blobs for premium effect */}
-      <div className="bg-blobs">
-        <div className="blob blob-1"></div>
-        <div className="blob blob-2"></div>
-        <div className="blob blob-3"></div>
-      </div>
+  // --- RENDERING ---
 
-      <div className="page">
-        <header className="topbar">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ padding: '8px', background: 'rgba(139, 92, 246, 0.2)', borderRadius: '12px', color: '#a5b4fc' }}>
-              <Bot size={28} />
-            </div>
-            <div>
-              <div className="brand">Nexus AI Chat</div>
-              <div className="sub">Powered by Gemini & FastAPI</div>
+  // 1. Separate Login Screen 
+  if (!token) {
+    return (
+      <div className="login-wrapper">
+        <div className="ambient-light"></div>
+        
+        {error && (
+          <div className="error-banner">
+            <AlertCircle size={16} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <div className="login-card">
+          <div className="logo-container">
+            <div className="logo-box">
+              <Sparkles size={36} color="#ffffff" />
             </div>
           </div>
-
-          <div className="auth">
-            {token ? (
-              <>
-                <span className="pill ok">Authenticated</span>
-                <button className="btn" onClick={logout} disabled={busy} title="Logout">
-                  <LogOut size={16} />
-                  <span>Logout</span>
-                </button>
-              </>
+          <h1 className="login-title">Nexus AI</h1>
+          <p className="login-subtitle">Sign in to dive into an extraordinary conversational experience driven by intelligence.</p>
+          
+          <div className="login-btn-wrapper">
+            {!googleClientIdPresent ? (
+              <div style={{ color: '#fca5a5', fontSize: '0.9rem', background: 'rgba(239, 68, 68, 0.1)', padding: '12px', borderRadius: '8px' }}>
+                VITE_GOOGLE_CLIENT_ID is missing from frontend/.env
+              </div>
             ) : (
-              <>
-                <span className="pill">{googleClientIdPresent ? "Sign in required" : "Missing VITE_GOOGLE_CLIENT_ID"}</span>
-                <div className="google" style={{ borderRadius: '8px', overflow: 'hidden' }}>
-                  <GoogleLogin
-                    onSuccess={handleGoogleLogin}
-                    onError={() => setError("Google login failed")}
-                    useOneTap={false}
-                    theme="filled_black"
-                    shape="pill"
-                  />
-                </div>
-              </>
+              <GoogleLogin
+                onSuccess={handleGoogleLogin}
+                onError={() => setError("Google login failed")}
+                useOneTap={false}
+                theme="filled_black"
+                shape="pill"
+                size="large"
+              />
             )}
           </div>
-        </header>
+        </div>
+      </div>
+    );
+  }
 
-        {error ? (
-          <div className="error">
-            <AlertCircle size={18} />
-            {error}
+  // 2. Stylish Modern Chat Interface
+  return (
+    <div className="app-container">
+      {error && (
+        <div className="error-banner">
+          <AlertCircle size={16} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="brand-small">
+            <Sparkles size={20} color="#a78bfa" />
+            Nexus AI
           </div>
-        ) : null}
+          <button className="btn-icon" title="New Chat" onClick={clearHistory}>
+            <MessageSquare size={18} />
+          </button>
+        </div>
 
-        <main className="grid">
-          <section className="card">
-            <div className="cardTitle">
-              <MessageSquare size={18} color="#a5b4fc" />
-              New Conversation
+        <div className="history-list">
+           {/* We just show a summary in the sidebar for aesthetics */}
+          <div className="history-item" style={{background: 'var(--bg-tertiary)', color: '#fff', borderColor: 'var(--border-light)'}}>
+            <MessageSquare size={14} /> Current Session
+          </div>
+          {history.length === 0 && (
+            <div style={{padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center'}}>
+              No history yet. Start a conversation!
             </div>
-            <form onSubmit={sendMessage} className="composer">
-              <textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder={token ? "Ask me anything... (e.g. 'Explain quantum computing')" : "Please sign in to start chatting..."}
-                disabled={busy || !token}
-              />
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <div className="row">
-                  <button className="btn danger" type="button" onClick={clearHistory} disabled={busy || !token || (history.length === 0 && !reply)}>
-                    <Trash2 size={16} />
-                    Reset
-                  </button>
-                </div>
-                <button className="btn primary" type="submit" disabled={busy || !token || !message.trim()}>
-                  <Send size={16} />
-                  Send Message
-                </button>
-              </div>
-            </form>
+          )}
+        </div>
 
-            <div className="replyBox">
-              <div className="cardTitle small">AI Response</div>
-              {busy && !reply ? (
+        <div className="sidebar-footer">
+          <div className="user-profile">
+            <div className="avatar">
+              <User size={16} color="#a1a1aa" />
+            </div>
+            <span>Authorized User</span>
+          </div>
+          <div style={{display: 'flex', gap: '8px'}}>
+            <button className="btn-icon danger" onClick={clearHistory} title="Clear Chat">
+              <Trash2 size={16} />
+            </button>
+            <button className="btn-icon" onClick={logout} title="Logout">
+              <LogOut size={16} />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <main className="chat-area">
+        <div className="chat-messages">
+          {history.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <Sparkles size={32} />
+              </div>
+              <h2>How can I help you today?</h2>
+              <p>Type your message below to start chatting with Nexus.</p>
+            </div>
+          ) : (
+            history.map((msg, idx) => (
+              <div key={idx} className="message-wrapper">
+                <div className={`message-avatar ${msg.role}`}>
+                  {msg.role === "model" ? <Sparkles size={18} color="#fff" /> : <User size={18} color="#a1a1aa" />}
+                </div>
+                <div className="message-content">
+                  {msg.parts}
+                </div>
+              </div>
+            ))
+          )}
+
+          {busy && (
+            <div className="message-wrapper">
+              <div className="message-avatar model">
+                <Sparkles size={18} color="#fff" />
+              </div>
+              <div className="message-content">
                 <div className="typing-indicator">
                   <div className="typing-dot"></div>
                   <div className="typing-dot"></div>
                   <div className="typing-dot"></div>
                 </div>
-              ) : (
-                <div className="reply">{reply || <span style={{color: 'var(--text-muted)', fontStyle: 'italic'}}>Awaiting your prompt...</span>}</div>
-              )}
+              </div>
             </div>
-          </section>
+          )}
+          <div ref={chatEndRef} />
+        </div>
 
-          <aside className="card">
-            <div className="cardTitle">
-              <Bot size={18} color="#a5b4fc" />
-              Chat History
-            </div>
-            <div className="history" ref={historyRef}>
-              {!token ? (
-                <div className="muted">Sign in to view your chat history.</div>
-              ) : history?.length ? (
-                history.map((h, idx) => (
-                  <div 
-                    key={idx} 
-                    className={`msg ${h.role === "model" ? "model" : "user"}`}
-                    style={{ animationDelay: `${Math.min(idx * 0.05, 0.5)}s` }}
-                  >
-                    <div className="role">
-                      {h.role === "model" ? "Nexus AI" : "You"}
-                    </div>
-                    <div className="text">{h.parts}</div>
-                  </div>
-                ))
-              ) : (
-                <div className="muted">Start chatting to see history here.</div>
-              )}
-            </div>
-          </aside>
-        </main>
-      </div>
-    </>
+        <div className="input-area">
+          <form className="input-container" onSubmit={sendMessage}>
+            <textarea
+              ref={textareaRef}
+              rows="1"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Message Nexus AI..."
+              disabled={busy}
+            />
+            <button type="submit" className="send-btn" disabled={!message.trim() || busy}>
+              <Send size={16} />
+            </button>
+          </form>
+          <div style={{textAlign: 'center', marginTop: '12px', fontSize: '0.75rem', color: 'var(--text-secondary)'}}>
+             Nexus AI may produce inaccurate information about people, places, or facts.
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }
