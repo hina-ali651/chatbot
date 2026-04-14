@@ -10,6 +10,11 @@ from google.genai import types
 from dotenv import load_dotenv
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+import sys
+
+# Ensure backend directory is in path to import mongo_chat_history
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import mongo_chat_history
 
 load_dotenv()
 
@@ -18,14 +23,13 @@ app = FastAPI()
 # Enable CORS for the frontend Vite server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174","https://chatbot-w9g8.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 SECRET_KEY = "super-secret-key-for-local-chatbot"
-HISTORY_FILE = "chat_history.json"
 SYSTEM_PROMPT = """You are a helpful, friendly AI assistant.
 Keep your responses well-formatted and clear for reading.
 When asked to help with code, provide clean, working examples using markdown."""
@@ -35,6 +39,15 @@ try:
 except Exception as e:
     print("WARNING: Gemini API key error. Check your .env setup.")
     client = None
+
+# Connect to MongoDB on startup
+@app.on_event("startup")
+def startup_db_client():
+    mongo_chat_history.connect_to_mongodb()
+
+@app.on_event("shutdown")
+def shutdown_db_client():
+    mongo_chat_history.close_connection()
 
 # --- Models ---
 class LoginRequest(BaseModel):
@@ -46,27 +59,19 @@ class GoogleTokenRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str | None = None
 
 # --- Helpers ---
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
-    return []
-
-def save_history(history):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
-
 def verify_token(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split(" ")[1]
     try:
-        jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return sub
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -105,49 +110,60 @@ def google_auth(request: GoogleTokenRequest):
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"Invalid Google token: {str(e)}")
 
-@app.get("/api/history", dependencies=[Depends(verify_token)])
-def get_history():
-    return {"history": load_history()}
+@app.get("/api/sessions")
+def get_sessions(user_id: str = Depends(verify_token)):
+    return {"sessions": mongo_chat_history.get_user_sessions(user_id)}
 
-@app.post("/api/clear", dependencies=[Depends(verify_token)])
-def clear_history():
-    save_history([])
+@app.get("/api/history/{session_id}")
+def get_history(session_id: str, user_id: str = Depends(verify_token)):
+    docs = mongo_chat_history.get_chat_history_by_session(user_id, session_id)
+    formatted_history = []
+    for doc in docs:
+        if doc.get("user_message"):
+            formatted_history.append({"role": "user", "parts": doc["user_message"]})
+        if doc.get("bot_response"):
+            formatted_history.append({"role": "model", "parts": doc["bot_response"]})
+    return {"history": formatted_history}
+
+@app.post("/api/clear")
+def clear_history(user_id: str = Depends(verify_token)):
+    mongo_chat_history.delete_chat_history(user_id)
     return {"status": "cleared"}
 
-@app.post("/api/chat", dependencies=[Depends(verify_token)])
-def chat(request: ChatRequest):
+@app.post("/api/chat")
+def chat(request: ChatRequest, user_id: str = Depends(verify_token)):
     if not client:
         raise HTTPException(status_code=500, detail="Gemini API is not configured properly.")
     
-    history = load_history()
-    # Ensure role mapping is correct. Gemini expects 'user' or 'model'.
+    docs = []
+    if request.session_id:
+        all_docs = mongo_chat_history.get_chat_history_by_session(user_id, request.session_id)
+        docs = all_docs[-20:] # limit history context to last 20 messages for Gemini
     
-    # Map any old history formatting to Gemini's expected format
-    formatted_history = []
-    for msg in history:
-        # Standardize old format (if any) to new format
-        role = msg.get("role", "user")
-        if role == "assistant":
-            role = "model"
-            
-        parts = msg.get("parts") or msg.get("content") or ""
-        formatted_history.append({"role": role, "parts": parts})
-    
-    # Save formatted history back to be sure it's valid for future
-    history = formatted_history
-    history.append({"role": "user", "parts": request.message})
-    
-    # Build Gemini content list
     contents = []
-    for msg in history:
-        # Avoid passing any empty parts which causes errors
-        if msg["parts"].strip():
+    for doc in docs:
+        if doc.get("user_message", "").strip():
             contents.append(
                 types.Content(
-                    role=msg["role"],
-                    parts=[types.Part(text=msg["parts"])]
+                    role="user",
+                    parts=[types.Part(text=doc["user_message"])]
                 )
             )
+        if doc.get("bot_response", "").strip():
+            contents.append(
+                types.Content(
+                    role="model",
+                    parts=[types.Part(text=doc["bot_response"])]
+                )
+            )
+            
+    # Append current user message
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[types.Part(text=request.message)]
+        )
+    )
             
     try:
         response = client.models.generate_content(
@@ -156,11 +172,12 @@ def chat(request: ChatRequest):
             contents=contents
         )
         reply = response.text
-        history.append({"role": "model", "parts": reply})
-        save_history(history)
+        
+        # Save to MongoDB
+        mongo_chat_history.save_chat(user_id, request.message, reply, request.session_id)
+        
         return {"reply": reply}
     except Exception as e:
-        # Fallback if history is too corrupted/large
         print(f"Gemini API Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
