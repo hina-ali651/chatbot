@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import axios from "axios";
 import { GoogleLogin } from "@react-oauth/google";
-import { LogOut, Send, Trash2, Sparkles, User, AlertCircle, MessageSquare } from "lucide-react";
+import { LogOut, Send, Trash2, Sparkles, User, AlertCircle, MessageSquare, PlusSquare } from "lucide-react";
 
 function loadToken() {
   try {
@@ -24,6 +24,8 @@ export default function App() {
   const [token, setToken] = useState(loadToken);
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const chatEndRef = useRef(null);
@@ -49,7 +51,11 @@ export default function App() {
   }, [message]);
 
   const api = useMemo(() => {
-    const instance = axios.create({ baseURL: "/api" });
+    const instance = axios.create({ 
+      baseURL: import.meta.env.VITE_BACKEND_URL 
+        ? `${import.meta.env.VITE_BACKEND_URL}/api` 
+        : "/api" 
+    });
     instance.interceptors.request.use((config) => {
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
@@ -57,20 +63,48 @@ export default function App() {
     return instance;
   }, [token]);
 
-  async function refreshHistory() {
+  async function refreshSessions() {
     if (!token) return;
     try {
-      const res = await api.get("/history");
+      const res = await api.get("/sessions");
+      setSessions(res.data?.sessions ?? []);
+    } catch (e) {
+      if (e?.response?.status === 401) {
+        setToken("");
+        setSessions([]);
+        setHistory([]);
+      }
+    }
+  }
+
+  async function refreshHistory(sessionId) {
+    if (!token || !sessionId) return;
+    try {
+      const res = await api.get(`/history/${sessionId}`);
       setHistory(res.data?.history ?? []);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error(e);
     }
   }
 
   useEffect(() => {
-    if (token) void refreshHistory();
+    if (token) {
+      void refreshSessions();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  function loadSession(sessionId) {
+    if (sessionId === currentSessionId) return;
+    setCurrentSessionId(sessionId);
+    refreshHistory(sessionId);
+  }
+
+  function startNewChat() {
+    setCurrentSessionId(null);
+    setHistory([]);
+    setError("");
+  }
 
   async function handleGoogleLogin(credentialResponse) {
     setError("");
@@ -100,15 +134,19 @@ export default function App() {
     setMessage(""); // UI updates instantly
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     
+    const sessionIdToUse = currentSessionId || crypto.randomUUID();
+    if (!currentSessionId) setCurrentSessionId(sessionIdToUse);
+
     // Optimistic UI update
     setHistory(prev => [...prev, { role: "user", parts: userMessage }]);
     setError("");
     setBusy(true);
 
     try {
-      const res = await api.post("/chat", { message: userMessage });
+      await api.post("/chat", { message: userMessage, session_id: sessionIdToUse });
       // We rely on refreshHistory to pull the updated history including the model's reply
-      await refreshHistory();
+      await refreshHistory(sessionIdToUse);
+      await refreshSessions(); // update session list dynamically
     } catch (e) {
       const errDetail = e?.response?.data?.detail;
       if (errDetail && errDetail.includes("PERMISSION_DENIED")) {
@@ -137,6 +175,8 @@ export default function App() {
     try {
       await api.post("/clear");
       setHistory([]);
+      setSessions([]);
+      setCurrentSessionId(null);
     } catch (e) {
       setError(e?.response?.data?.detail ?? String(e));
     } finally {
@@ -147,6 +187,8 @@ export default function App() {
   function logout() {
     setToken("");
     setHistory([]);
+    setSessions([]);
+    setCurrentSessionId(null);
     setMessage("");
   }
 
@@ -207,23 +249,36 @@ export default function App() {
 
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="brand-small">
+          <div className="brand-small" style={{cursor: 'pointer'}} onClick={startNewChat}>
             <Sparkles size={20} color="#a78bfa" />
             Nexus AI
           </div>
-          <button className="btn-icon" title="New Chat" onClick={clearHistory}>
-            <MessageSquare size={18} />
+          <button className="btn-icon" title="New Chat" onClick={startNewChat}>
+            <PlusSquare size={18} />
           </button>
         </div>
 
         <div className="history-list">
-           {/* We just show a summary in the sidebar for aesthetics */}
-          <div className="history-item" style={{background: 'var(--bg-tertiary)', color: '#fff', borderColor: 'var(--border-light)'}}>
-            <MessageSquare size={14} /> Current Session
-          </div>
-          {history.length === 0 && (
+          {sessions.length === 0 ? (
             <div style={{padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center'}}>
-              No history yet. Start a conversation!
+              No chat history yet.
+            </div>
+          ) : (
+            <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
+              {sessions.map((session, idx) => (
+                <div 
+                  key={idx} 
+                  className="history-item" 
+                  onClick={() => loadSession(session.session_id)}
+                  style={{
+                    color: currentSessionId === session.session_id ? '#fff' : 'var(--text-secondary)',
+                    backgroundColor: currentSessionId === session.session_id ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
+                    cursor: 'pointer'
+                  }}>
+                  <MessageSquare size={14} style={{minWidth: '14px'}} />
+                  <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none'}}>{session.title}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -236,7 +291,7 @@ export default function App() {
             <span>Authorized User</span>
           </div>
           <div style={{display: 'flex', gap: '8px'}}>
-            <button className="btn-icon danger" onClick={clearHistory} title="Clear Chat">
+            <button className="btn-icon danger" onClick={clearHistory} title="Delete All Chats">
               <Trash2 size={16} />
             </button>
             <button className="btn-icon" onClick={logout} title="Logout">
